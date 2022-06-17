@@ -29,6 +29,7 @@ import os
 import sys
 from pathlib import Path
 
+import cv2
 import torch
 import torch.backends.cudnn as cudnn
 
@@ -44,7 +45,6 @@ from utils.general import (LOGGER, check_file, check_img_size, check_imshow, che
                            increment_path, non_max_suppression, print_args, scale_coords, strip_optimizer, xyxy2xywh)
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
-
 
 @torch.no_grad()
 def run(
@@ -82,6 +82,15 @@ def run(
     webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
     if is_url and is_file:
         source = check_file(source)  # download
+
+    #################### 추가
+    global falling_frame  # fallingFrame 수
+    falling_frame = 0
+    global lying_frame
+    lying_frame = 0
+    pre_label = ""
+    flag = False
+    ####################
 
     # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
@@ -160,15 +169,49 @@ def run(
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
-                        with open(f'{txt_path}.txt', 'a') as f:
+                        with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
                         label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
                         annotator.box_label(xyxy, label, color=colors(c, True))
-                    if save_crop:
-                        save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                        ########### 추가 : falling 식별
+                        label_input = label.split()
+                        behavior = label_input[0]
+                        print(behavior)
+                        if behavior == "standing" or behavior == "sitting":
+                          falling_frame = 0
+                          lying_frame = 0
+
+                        elif behavior == "falling":
+                          falling_frame += 1
+                          # lying_frame에 연속성 추가
+                          lying_frame = 0
+                          # falling -> lying 이동성 없애기
+                          flag == False
+                        
+                        elif behavior == "lying":
+                          lying_frame += 1
+                
+                          # lying 프레임 일때, 전 프레임이 falling
+                          # falling 이후에 lying 발생
+                          if pre_label == "falling":
+                            # falling -> lying 이동성 확인
+                            flag = True
+
+                        # lying 프레임이 연속적으로 3번 나오면 -> 확실한 lying 동작
+                        if lying_frame > 3:
+                          # falling 프레임 수에 따라 낙상 식별
+                          if falling_frame > 3 and flag == True:
+                            ######### 낙상 발생 알림 추가
+                            print("############낙상발생###########")
+                            #annotator.box_boundary(label="Hello World")
+
+                        pre_label = behavior
+                        #######################
+                        if save_crop:
+                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
             # Stream results
             im0 = annotator.result()
@@ -210,15 +253,15 @@ def run(
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model path(s)')
-    parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'best.pt', help='model path(s)')
+    parser.add_argument('--source', type=str, default=ROOT / 'data/images/Validation45.mp4', help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--view-img', action='store_true', help='show results')
+    parser.add_argument('--view-img', action='store_false', help='show results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
